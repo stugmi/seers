@@ -4,14 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seers"
-dynamic = ["version"]
-description = "Old School RuneScape Wiki, Grand Exchange, hiscores and game definitions for Python, with an optional MCP server"
+version = "0.9.0"
+description = "Old School RuneScape Wiki, Grand Exchange, hiscores and game cache names for Python, with an optional MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "WTFPL"
 license-files = ["LICENSE"]
 authors = [{ name = "Smug" }]
 dependencies = [
+  "anyio>=4.5,<5",
   "httpx>=0.27,<1",
   "beautifulsoup4>=4.12,<5",
   "markdownify>=1.2,<2",
@@ -31,6 +32,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Games/Entertainment",
   "Topic :: Games/Entertainment :: Role-Playing",
+  "Typing :: Typed",
 ]
 
 [project.urls]
@@ -39,22 +41,31 @@ Source = "https://github.com/stugmi/seers"
 Issues = "https://github.com/stugmi/seers/issues"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.12,<2"]
-dev = ["pytest>=8"]
+mcp = ["mcp>=2.3,<3"]
+dev = ["pytest>=8", "trio>=0.27"]
+
+[dependency-groups]
+dev = ["pytest>=8", "trio>=0.27"]
 
 [project.scripts]
-seers-wiki = "seers.wiki.cli:main"
-seers-data = "seers.data.fetch.cli:main"
-seers-mcp = "seers.mcp:main"
-
-[tool.hatch.version]
-path = "seers/version.py"
-
-[tool.hatch.build.targets.wheel]
-packages = ["seers"]
+seers-wiki = "seers.cli.wiki:main"
+seers-update = "seers.cli.update:main"
+seers-mcp = "seers.mcp.server:main"
 
 [tool.hatch.build.targets.sdist]
-include = ["seers", "tests", "examples", "pyproject.toml", "README.md", "LICENSE"]
+only-include = ["src/seers", "tests", "examples"]
+exclude = ["src/seers/data/*.zip"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+ignore = ["TRY004"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true

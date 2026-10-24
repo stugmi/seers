@@ -8,10 +8,9 @@ import httpx
 import pytest
 from rich.console import Console
 
+from conftest import reply
 from seers import OSRSError, WikiPage
 from seers.wiki.render import _table_parts, _table_rows, page_markdown, pager_styles
-
-from conftest import reply
 
 ARTICLE = """
 <div id="outside">Outside article</div>

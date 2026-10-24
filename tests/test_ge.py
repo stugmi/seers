@@ -1,9 +1,9 @@
 import httpx
 import pytest
 
-from seers import Item, OSRSError
-
 from conftest import reply
+from seers import Item, OSRSError
+from seers.ge import Timestep
 
 DRAGON_ITEMS = [
     {"id": 1215, "name": "Dragon dagger", "members": True, "limit": 70},
@@ -71,6 +71,27 @@ def test_item_list_is_fetched_once_until_refresh(make_client):
     assert state["fetches"] == 2
 
 
+@pytest.mark.anyio
+async def test_concurrent_lookups_share_one_mapping_download(tmp_path):
+    import anyio
+
+    from seers import AsyncClient
+    fetches = 0
+
+    def handler(request):
+        nonlocal fetches
+        if request.url.path.endswith("/mapping"):
+            fetches += 1
+            return httpx.Response(200, json=[{"id": 13652, "name": "Dragon claws"}])
+        return httpx.Response(200, json={"data": {"13652": {"high": 1}}})
+
+    async with AsyncClient(cache_path=tmp_path, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))) as client:
+        async with anyio.create_task_group() as tg:
+            for _ in range(5):
+                tg.start_soon(client.ge.price, "Dragon claws")
+    assert fetches == 1
+
+
 def test_a_broken_item_list_is_not_cached(make_client):
     state = {"payload": {"error": "maintenance"}}
     ge = make_client(lambda request: httpx.Response(200, json=state["payload"])).ge
@@ -104,16 +125,22 @@ def test_price_accepts_an_id_or_a_name(make_client, reference):
 
 def test_price_only_knows_the_name_when_it_was_looked_up(make_client):
     ge = make_client(mapping_then(prices)).ge
-    assert ge.price(13652).name == ""
+    assert ge.price(13652).name is None
     assert ge.price(ge.item("Dragon claws")).name == "Dragon claws"
 
 
 def test_history_is_oldest_first(make_client):
     history = make_client(mapping_then(prices)).ge.history("Dragon claws", "24h")
     assert (history.name, history.timestep, len(history)) == ("Dragon claws", "24h", 2)
+    assert history.timestep is Timestep.ONE_DAY
+    assert history.timestep == "24h"
     first, latest = history
     assert first.time < latest.time
     assert (first.avg_low, latest.avg_low) == (None, 47_900_000)
+
+    history_enum = make_client(mapping_then(prices)).ge.history("Dragon claws", Timestep.ONE_DAY)
+    assert history_enum.timestep is Timestep.ONE_DAY
+    assert len(history_enum) == 2
 
 
 def test_unknown_items_and_empty_prices(make_client):

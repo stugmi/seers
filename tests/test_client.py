@@ -1,11 +1,9 @@
 import httpx
 import pytest
 
-import seers
-from seers import Client, OSRSError
-from seers.version import REPOSITORY, __version__
-
 from conftest import reply
+import seers
+from seers import REPOSITORY, AsyncClient, Client, OSRSError, __version__
 
 
 def test_requests_identify_as_seers_until_user_agent_changes(make_client):
@@ -26,28 +24,47 @@ def test_requests_identify_as_seers_until_user_agent_changes(make_client):
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), None, True, "30"])
 def test_rejects_unusable_timeouts(tmp_path, timeout):
     with pytest.raises(ValueError):
-        Client(data_dir=tmp_path, timeout=timeout)
+        Client(cache_path=tmp_path, timeout=timeout)
 
 
 @pytest.mark.parametrize("agent", ["", "   ", None])
 def test_rejects_blank_user_agents(tmp_path, agent):
     with pytest.raises(ValueError):
-        Client(data_dir=tmp_path, user_agent=agent)
+        Client(cache_path=tmp_path, user_agent=agent)
 
 
-def test_injected_http_client_is_never_closed(make_client):
-    client = make_client(reply({"data": {}}))
-    with client:
+def test_injected_http_client_is_never_closed(tmp_path):
+    http = httpx.Client(transport=httpx.MockTransport(reply({"data": {}})))
+    with Client(cache_path=tmp_path, http_client=http) as client:
         client.ge.price(385)
     client.close()
 
-    assert not client._http.is_closed
+    assert not http.is_closed
     assert client.ge.price(385).high is None
+
+
+@pytest.mark.anyio
+async def test_async_client_never_closes_an_injected_http_client(tmp_path):
+    http = httpx.AsyncClient(transport=httpx.MockTransport(reply({"data": {}})))
+    async with AsyncClient(cache_path=tmp_path, http_client=http) as client:
+        await client.ge.price(385)
+
+    assert not http.is_closed
+    assert (await client.ge.price(385)).high is None
+    await http.aclose()
 
 
 def test_owned_http_client_closes_even_when_the_block_raises(tmp_path):
     with pytest.raises(RuntimeError):
-        with Client(data_dir=tmp_path) as client:
+        with Client(cache_path=tmp_path) as client:
+            raise RuntimeError("bank pin forgotten")
+    assert client._http.is_closed
+
+
+@pytest.mark.anyio
+async def test_async_owned_http_client_closes_even_when_the_block_raises(tmp_path):
+    with pytest.raises(RuntimeError):
+        async with AsyncClient(cache_path=tmp_path) as client:
             raise RuntimeError("bank pin forgotten")
     assert client._http.is_closed
 
@@ -75,6 +92,6 @@ def test_configure_updates_the_shared_default_client():
     try:
         assert seers.configure(user_agent="clue-helper/0.1", timeout=5) is client
         assert (client.user_agent, client.timeout) == ("clue-helper/0.1", 5.0)
-        assert seers.wiki._wiki() is client.wiki
+        assert seers.default_client().wiki is client.wiki
     finally:
         client.user_agent, client.timeout = original

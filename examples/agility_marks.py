@@ -1,5 +1,8 @@
 """Rank Agility courses by marks of grace and XP: python examples/agility_marks.py."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 import re
 
 from rich import box
@@ -17,6 +20,15 @@ AMYLASE = ("Colossal", "Brimhaven")  # Marks come from selling amylase packs, no
 MEDALS = {1: "bold #ffd700", 2: "bold #c0c0c0", 3: "bold #cd7f32"}
 
 
+@dataclass(frozen=True, slots=True)
+class Course:
+    name: str
+    level: int
+    low: float
+    high: float
+    xp: float
+    score: float
+
 def numbers(text: str) -> list[float]:
     return [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)]
 
@@ -28,7 +40,7 @@ def key(name: str, level: str) -> tuple[int, str]:
     return int(level), word
 
 
-def courses() -> list[dict]:
+def courses() -> list[Course]:
     xp = {}
     for row in wiki.page("Agility").table("Experience per hour")[1:]:
         level, _, name, category, rate, *_ = row
@@ -36,17 +48,23 @@ def courses() -> list[dict]:
             name = f"{name} ({'Advanced' if category == 'Advanced Course' else 'Basic'})"
         xp[key(name, level)] = (name, numbers(rate)[0])
 
-    result = []
+    result: list[Course] = []
     # Rows with fewer cells are diary-boosted variants of the row above; keep base rates.
     for name, level, marks in (r for r in wiki.page("Mark of Grace").table("Marks/h")[1:] if len(r) == 3):
         course, rate = xp[key(name, level)]
         low, high = (numbers(marks) * 2)[:2]
         mid = (low + high) / 2
         result.append(
-            {"name": course, "level": int(level), "low": low, "high": high,
-             "xp": rate, "score": mid + rate / XP_PER_MARK}
+            Course(
+                name=course,
+                level=int(level),
+                low=low,
+                high=high,
+                xp=rate,
+                score=mid + rate / XP_PER_MARK,
+            )
         )
-    return sorted(result, key=lambda c: c["score"], reverse=True)
+    return sorted(result, key=lambda c: c.score, reverse=True)
 
 
 def amylase() -> tuple[float, list[tuple[str, float]]]:
@@ -56,10 +74,10 @@ def amylase() -> tuple[float, list[tuple[str, float]]]:
     return grace, [(shop, numbers(rows[shop][4])[0]) for shop in CURRENCIES]
 
 
-def best_by_level(ranked: list[dict]) -> list[tuple[int, int, str]]:
+def best_by_level(ranked: list[Course]) -> list[tuple[int, int, str]]:
     bands: list[tuple[int, int, str]] = []
     for level in range(1, 100):
-        best = next(c["name"] for c in ranked if c["level"] <= level)
+        best = next(c.name for c in ranked if c.level <= level)
         if bands and bands[-1][2] == best:
             bands[-1] = (bands[-1][0], level, best)
         else:
@@ -73,8 +91,8 @@ def main() -> None:
         ranked = courses()
         grace, shops = amylase()
 
-    max_marks = max(c["high"] for c in ranked)
-    max_xp = max(c["xp"] for c in ranked)
+    max_marks = max(c.high for c in ranked)
+    max_xp = max(c.xp for c in ranked)
     table = Table(
         title="\nAgility courses ranked by marks of grace, then XP\n",
         title_style="bold green",
@@ -93,19 +111,19 @@ def main() -> None:
     table.add_column("", width=12)
     table.add_column("Score", justify="right")
     for rank, c in enumerate(ranked, 1):
-        name = Text(c["name"], style=MEDALS.get(rank, ""))
-        if c["name"].startswith(AMYLASE):
+        name = Text(c.name, style=MEDALS.get(rank, ""))
+        if c.name.startswith(AMYLASE):
             name.append(" ◆", style="magenta")
-        marks = f"{c['low']:g}–{c['high']:g}" if c["high"] != c["low"] else f"{c['low']:g}"
+        marks = f"{c.low:g}–{c.high:g}" if c.high != c.low else f"{c.low:g}"
         table.add_row(
             Text(str(rank), style=MEDALS.get(rank, "dim")),
             name,
-            str(c["level"]),
+            str(c.level),
             marks,
-            Bar(max_marks, 0, (c["low"] + c["high"]) / 2, color="green", bgcolor="#2a2a2a"),
-            f"{c['xp'] / 1000:g}k",
-            Bar(max_xp, 0, c["xp"], color="blue", bgcolor="#2a2a2a"),
-            Text(f"{c['score']:.2f}", style=MEDALS.get(rank, "bold")),
+            Bar(max_marks, 0, (c.low + c.high) / 2, color="green", bgcolor="#2a2a2a"),
+            f"{c.xp / 1000:g}k",
+            Bar(max_xp, 0, c.xp, color="blue", bgcolor="#2a2a2a"),
+            Text(f"{c.score:.2f}", style=MEDALS.get(rank, "bold")),
         )
     # Everything below shares the main table's width instead of the terminal's.
     width = min(console.width, console.measure(table).maximum)

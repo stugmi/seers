@@ -2,11 +2,9 @@ import httpx
 import pytest
 
 from seers import OSRSError, PlayerNotFoundError
+from seers.hiscores import Mode
 
-SUFFIXES = {
-    "": "main", "_ironman": "ironman", "_hardcore_ironman": "hardcore",
-    "_ultimate": "ultimate", "_deadman": "deadman", "_seasonal": "seasonal",
-}
+SUFFIXES = {mode.suffix: mode.value for mode in Mode}
 
 
 def table(total_xp, *, name="Bank Stander"):
@@ -67,6 +65,10 @@ def test_stats_are_keyed_by_name_not_position(hiscores):
 def test_stats_reads_exactly_one_table(hiscores, mode):
     stats = hiscores({mode: table(777)}).stats("Bank Stander", mode)
     assert (stats.mode, stats.total_xp) == (mode, 777)
+    assert stats.mode is Mode(mode)
+
+    stats_enum = hiscores({mode: table(777)}).stats("Bank Stander", Mode(mode))
+    assert stats_enum.mode is Mode(mode)
 
 
 @pytest.mark.parametrize(("tables", "mode", "hardcore_died", "deulted", "deironed"), [
@@ -84,6 +86,8 @@ def test_lookup_works_out_the_account_type(hiscores, tables, mode, hardcore_died
     player = hiscores({key: table(xp) for key, xp in tables.items()}).lookup("bank stander")
 
     assert (player.name, player.mode) == ("Bank Stander", mode)
+    assert player.mode is Mode(mode)
+    assert player.mode == mode
     assert (player.hardcore_died, player.deulted, player.deironed) == (hardcore_died, deulted, deironed)
     assert player.total_level == 2277
     assert {key: stats.total_xp for key, stats in player.stats.items()} == tables
