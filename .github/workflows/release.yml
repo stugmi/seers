@@ -3,11 +3,14 @@ name: Release
 # Publishes a release whenever the version in pyproject.toml changes on main.
 # Bumping `version` and pushing is the whole release process: the workflow tags the
 # pushed commit as v<version>, tests it, builds it and attaches the distributions.
+# It can also be started by hand (Actions > Release > Run workflow); it then releases the
+# current version of the chosen branch, if that version has no tag yet.
 
 on:
   push:
     branches: ["main"]
     paths: ["pyproject.toml"]
+  workflow_dispatch:
 
 concurrency:
   group: release
