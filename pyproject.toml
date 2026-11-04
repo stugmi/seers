@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seers"
-version = "0.9.0"
+version = "0.10.0"
 description = "Old School RuneScape Wiki, Grand Exchange, hiscores and game cache names for Python, with an optional MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
