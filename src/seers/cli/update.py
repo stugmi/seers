@@ -45,18 +45,21 @@ def _delta(change: int) -> Text:
     return Text(f"{change:+,}", style="green" if change > 0 else "red")
 
 
-def _report(console: Console, status: CacheStatus, before: CacheStatus | None, refreshed: bool) -> None:
+def _headline(status: CacheStatus, before: CacheStatus | None, refreshed: bool) -> str:
     if refreshed and before is None:
-        console.print(f"[bold green]Downloaded[/] the OSRS name cache: [bold]{status.version}[/]")
-    elif refreshed and before.version == status.version and before.rows == status.rows:
-        console.print(f"[bold green]Re-downloaded[/] [bold]{status.version}[/]: nothing changed")
-    elif refreshed:
-        console.print(f"[bold green]Updated[/] the OSRS name cache: [bold]{before.version}[/] -> [bold]{status.version}[/]")
-    else:
-        console.print(
-            f"[bold green]Up to date[/]: [bold]{status.version}[/], "
-            f"updated {_ago(status.updated_at)}; [dim]--force downloads again[/]"
-        )
+        return f"[bold green]Downloaded[/] the OSRS name cache: [bold]{status.version}[/]"
+    if refreshed and before.version == status.version and before.rows == status.rows:
+        return f"[bold green]Re-downloaded[/] [bold]{status.version}[/]: nothing changed"
+    if refreshed:
+        return f"[bold green]Updated[/] the OSRS name cache: [bold]{before.version}[/] -> [bold]{status.version}[/]"
+    return (
+        f"[bold green]Up to date[/]: [bold]{status.version}[/], "
+        f"updated {_ago(status.updated_at)}; [dim]--force downloads again[/]"
+    )
+
+
+def _report(console: Console, headline: str, status: CacheStatus, before: CacheStatus | None) -> None:
+    console.print(headline)
     console.print()
 
     cache = status.cache
@@ -78,7 +81,7 @@ def _report(console: Console, status: CacheStatus, before: CacheStatus | None, r
             console.print(f"[cyan]{line[0]:<12}[/]", line[1], highlight=False)
     console.print()
 
-    compare = refreshed and before is not None
+    compare = before is not None
     table = Table(box=SIMPLE_HEAD, pad_edge=False, header_style="bold cyan")
     table.add_column("Table")
     table.add_column("Entries", justify="right")
@@ -92,6 +95,28 @@ def _report(console: Console, status: CacheStatus, before: CacheStatus | None, r
     console.print(table)
 
 
+def _check(console: Console, updater: CacheUpdater) -> None:
+    """Compare the local snapshot with upstream without changing anything."""
+    status = updater.status()
+    if status is None:
+        console.print(
+            f"[bold yellow]No downloaded snapshot[/] in {updater.cache_dir}; "
+            "the bundled cache is in use. [dim]Run seers-update to download one.[/]"
+        )
+        return
+    if updater.has_update():
+        headline = (
+            f"[bold yellow]Update available[/]: you have [bold]{status.version}[/], "
+            "upstream has a newer cache. [dim]Run seers-update.[/]"
+        )
+    else:
+        headline = (
+            f"[bold green]Up to date[/] with upstream: [bold]{status.version}[/], "
+            f"last synced {_ago(status.updated_at)}"
+        )
+    _report(console, headline, status, None)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Update the game cache names from OpenRS2")
     parser.add_argument("--cache-dir", type=Path, help="Where to store cache.db")
@@ -99,10 +124,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--cache-id", type=int, help="Pin an OpenRS2 cache ID")
     parser.add_argument("--max-age", type=float, default=86400, help="Skip if newer (seconds)")
     parser.add_argument("--force", action="store_true", help="Download even if fresh")
+    parser.add_argument("--check", action="store_true", help="Only report the current snapshot and whether upstream has a newer one")
     args = parser.parse_args(argv)
+    if args.check and args.force:
+        parser.error("--check cannot be combined with --force")
 
     try:
         updater = CacheUpdater(args.cache_dir, source_url=args.source_url, cache_id=args.cache_id)
+        if args.check:
+            _check(Console(), updater)
+            return
         try:
             before = updater.status()
         except CacheUpdateError:
@@ -116,7 +147,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1) from error
 
     refreshed = before is None or before.updated_at != status.updated_at
-    _report(Console(), status, before, refreshed)
+    _report(Console(), _headline(status, before, refreshed), status, before if refreshed else None)
 
 
 if __name__ == "__main__":

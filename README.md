@@ -212,6 +212,7 @@ On Windows the default pager drops colours; set `PAGER="less -R"` or omit `--pag
 
 ```sh
 seers-update                   # update the cache; skipped if the snapshot is under a day old
+seers-update --check           # report the snapshot and whether upstream has a newer one; downloads nothing
 seers-update --force           # update regardless of age
 seers-update --cache-id 2746   # pin an OpenRS2 cache ID
 ```
