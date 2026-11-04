@@ -286,8 +286,10 @@ class SeersMCP(MCPServer[AsyncClient]):
                 async with anyio.create_task_group() as tasks:
                     if sync_on_start and owned.data.updater is not None:
                         tasks.start_soon(_sync_cache, owned.data.updater)
-                    yield owned
-                    tasks.cancel_scope.cancel()  # a download still running must not delay shutdown
+                    try:
+                        yield owned
+                    finally:
+                        tasks.cancel_scope.cancel()  # a download still running must not delay shutdown
 
         super().__init__(
             "seers",

@@ -88,7 +88,7 @@ _ORPHANING_CLIENT = textwrap.dedent(
     # after the client dies the pipe stays open, so the server never sees EOF.
     read, write = os.pipe()
     os.set_inheritable(write, True)
-    server = subprocess.Popen([sys.executable, "-m", "seers.mcp"], stdin=read, stdout=subprocess.PIPE)
+    server = subprocess.Popen([sys.executable, "-m", "seers.mcp", "--no-sync"], stdin=read, stdout=subprocess.PIPE)
     leaker = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         close_fds=False, **({} if os.name == "nt" else {"pass_fds": (write,)}),
@@ -159,7 +159,7 @@ async def test_one_http_server_serves_concurrent_clients_and_refuses_a_duplicate
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    command = [sys.executable, "-m", "seers.mcp", "--cache-dir", str(tmp_path), "--port", str(port)]
+    command = [sys.executable, "-m", "seers.mcp", "--no-sync", "--cache-dir", str(tmp_path), "--port", str(port)]
     server = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline = time.monotonic() + 20
