@@ -270,6 +270,7 @@ From Python, `seers.mcp.SeersMCP` is an `MCPServer`: `SeersMCP().run()`, or `See
 
 ```sh
 python examples/agility_marks.py   # agility courses ranked by marks of grace and XP/hr
+python examples/food_gp_per_heal.py # cheapest GP per heal single-eat foods healing 20-22; -n N or --all
 python examples/cache_names.py
 ```
 
