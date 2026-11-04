@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from seers import Cache
+from seers.cli import update as update_cli
 from seers.data import Kind
 from seers.data.js5 import decompress, read_index, unpack_group
 from seers.data.store import DB_FILENAME, read_header, read_table_bytes, write_store
@@ -512,3 +513,41 @@ def test_an_unreachable_upstream_surfaces_as_a_cache_error_and_keeps_the_snapsho
     with pytest.raises(CacheUpdateError):
         updater.sync()
     assert updater.status() is not None
+
+
+@pytest.fixture
+def run_cli(updater, capsys):
+    def run(*args):
+        with patch("seers.cli.update.CacheUpdater", return_value=updater):
+            update_cli.main(list(args))
+        return capsys.readouterr().out
+    return run
+
+
+def test_check_reports_without_downloading(updater, server, run_cli):
+    assert "No downloaded snapshot" in run_cli("--check")
+    assert not updater.db_path.exists()
+
+    updater.update()
+    seen = len(server.requests)
+    assert "Up to date with upstream" in run_cli("--check")
+    assert [request.url.path for request in server.requests[seen:]] == ["/caches.json"]
+
+    server.records[0]["timestamp"] = "2026-10-08T10:45:05Z"
+    before = updater.db_path.read_bytes()
+    assert "Update available" in run_cli("--check")
+    assert updater.db_path.read_bytes() == before
+
+
+def test_check_and_force_conflict(run_cli):
+    with pytest.raises(SystemExit) as stopped:
+        run_cli("--check", "--force")
+    assert stopped.value.code == 2
+
+
+def test_check_fails_with_exit_status_1_when_upstream_is_unreadable(updater, server, run_cli):
+    updater.update()
+    server.records.clear()
+    with pytest.raises(SystemExit) as stopped:
+        run_cli("--check")
+    assert stopped.value.code == 1
