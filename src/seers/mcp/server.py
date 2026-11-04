@@ -6,9 +6,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import functools
 import inspect
+import logging
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeVar
 
+import anyio
+from anyio import to_thread
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
@@ -16,7 +19,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from seers import AsyncClient, __version__
-from seers.data import CacheUpdateError, Entry, Kind
+from seers.data import CacheUpdateError, CacheUpdater, Entry, Kind
 from seers.display import Results
 from seers.errors import OSRSError
 from seers.ge import Item, Price, PriceHistory, Timestep
@@ -232,6 +235,18 @@ async def player_stats(name: PlayerName, mode: Mode, seers: Seers) -> Hiscore:
     return Hiscore.of(await seers.hiscores.stats(name, mode))
 
 
+logger = logging.getLogger("seers.mcp")
+
+
+async def _sync_cache(updater: CacheUpdater) -> None:
+    """Refresh the managed cache when upstream changed; never raises, the bundled data still works."""
+    try:
+        if await to_thread.run_sync(updater.sync, abandon_on_cancel=True):
+            logger.info("Updated the OSRS name cache from %s", updater.source_url)
+    except CacheUpdateError as error:
+        logger.warning("OSRS name cache sync failed: %s", error)
+
+
 class SeersMCP(MCPServer[AsyncClient]):
     """The seers tools on an ``MCPServer``.
 
@@ -239,6 +254,11 @@ class SeersMCP(MCPServer[AsyncClient]):
 
     Pass ``client`` to share your own ``AsyncClient``; its lifetime stays yours. Otherwise
     the server opens one with the given cache settings and closes it on shutdown.
+
+    With ``sync_on_start`` (the default) a server that owns a managed cache checks OpenRS2 in
+    the background once it is up, and downloads a snapshot if upstream's cache differs from
+    the local one. Tools keep answering from the current snapshot meanwhile, and an
+    unreachable upstream only logs a warning.
     """
 
     def __init__(
@@ -249,6 +269,7 @@ class SeersMCP(MCPServer[AsyncClient]):
         cache_dir: str | Path | None = None,
         auto_update: bool = False,
         max_age: float = 86400,
+        sync_on_start: bool = True,
         log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "WARNING",
     ) -> None:
         @asynccontextmanager
@@ -262,7 +283,11 @@ class SeersMCP(MCPServer[AsyncClient]):
                 auto_update=auto_update,
                 max_age=max_age,
             ) as owned:
-                yield owned
+                async with anyio.create_task_group() as tasks:
+                    if sync_on_start and owned.data.updater is not None:
+                        tasks.start_soon(_sync_cache, owned.data.updater)
+                    yield owned
+                    tasks.cancel_scope.cancel()  # a download still running must not delay shutdown
 
         super().__init__(
             "seers",
@@ -282,19 +307,27 @@ class SeersMCP(MCPServer[AsyncClient]):
 
 
 def main(argv: list[str] | None = None) -> None:
-    """``seers-mcp`` / ``python -m seers.mcp``: serve the tools over stdio."""
-    watch_client()
-    parser = argparse.ArgumentParser(prog="seers-mcp", description="seers MCP server (stdio)")
+    """``seers-mcp`` / ``python -m seers.mcp``: serve the tools over stdio, or over HTTP with ``--port``."""
+    parser = argparse.ArgumentParser(prog="seers-mcp", description="seers MCP server")
     parser.add_argument("--cache-path", type=Path, help="Use your own cache.db or directory")
     parser.add_argument("--cache-dir", type=Path, help="Where downloaded snapshots are stored")
     parser.add_argument("--auto-update", action="store_true", help="Refresh the cache when it is read")
     parser.add_argument("--max-age", type=float, default=86400, help="Refresh interval in seconds")
+    parser.add_argument("--no-sync", action="store_true", help="Do not check OpenRS2 for a changed cache at startup")
+    parser.add_argument("--port", type=int, help="Serve streamable HTTP on this port instead of stdio, so every client shares one process")
+    parser.add_argument("--host", default="127.0.0.1", help="Interface for --port (default: loopback only)")
     args = parser.parse_args(argv)
     if args.cache_path is not None and (args.auto_update or args.cache_dir is not None):
         parser.error("--cache-path cannot be combined with --auto-update or --cache-dir")
-    SeersMCP(
+    server = SeersMCP(
         cache_path=args.cache_path,
         cache_dir=args.cache_dir,
         auto_update=args.auto_update,
         max_age=args.max_age,
-    ).run()
+        sync_on_start=not args.no_sync,
+    )
+    if args.port is None:
+        watch_client()
+        server.run()
+    else:
+        server.run("streamable-http", host=args.host, port=args.port)

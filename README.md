@@ -237,7 +237,15 @@ All tools are read-only and return structured results with an output schema, exc
 
 The server exits when its stdin closes, and also when the client process that started it exits, even if another process still holds the pipe open.
 
-Options: `--cache-path` (your own `cache.db` or directory), `--cache-dir`, `--auto-update`, `--max-age`.
+On startup the server checks OpenRS2 in the background and downloads a new snapshot if upstream's cache differs from the local one; tools answer from the current snapshot meanwhile, and an unreachable upstream only logs a warning. `--no-sync` (or `SeersMCP(sync_on_start=False)`) turns it off. The check is skipped with `--cache-path` or a client you pass in.
+
+Options: `--cache-path` (your own `cache.db` or directory), `--cache-dir`, `--auto-update`, `--max-age`, `--no-sync`, `--port`/`--host`.
+
+Every stdio client starts its own server. To share one process between all clients (several agent sessions), serve streamable HTTP and point each client at the URL; the server binds loopback only unless `--host` says otherwise, and a second launch on the same port exits:
+
+```sh
+seers-mcp --port 8765    # clients: {"type": "http", "url": "http://127.0.0.1:8765/mcp"}
+```
 
 Client configuration:
 

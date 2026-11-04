@@ -485,3 +485,30 @@ def test_zero_timeout_is_refused_but_zero_max_age_means_always_stale(make_update
 def test_source_must_be_a_plain_absolute_url(cache, source):
     with pytest.raises(ValueError):
         CacheUpdater(cache, source_url=source)
+
+
+def test_sync_downloads_only_when_upstream_changed(updater, server):
+    assert updater.sync()  # no snapshot yet
+    downloads = len(server.requests)
+
+    assert not updater.sync()
+    assert [request.url.path for request in server.requests[downloads:]] == ["/caches.json"]
+
+    server.records[0]["timestamp"] = "2026-10-08T10:45:05Z"
+    assert updater.has_update()
+    assert updater.sync()
+    assert updater.status().cache["timestamp"] == "2026-10-08T10:45:05Z"
+    assert not updater.has_update()
+
+
+def test_a_snapshot_for_another_pinned_cache_is_out_of_date(cache, make_updater):
+    make_updater(cache_id=77).update()
+    assert make_updater().has_update()
+
+
+def test_an_unreachable_upstream_surfaces_as_a_cache_error_and_keeps_the_snapshot(updater, server):
+    updater.update()
+    server.records.clear()
+    with pytest.raises(CacheUpdateError):
+        updater.sync()
+    assert updater.status() is not None

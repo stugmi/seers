@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 import os
@@ -266,6 +266,38 @@ class CacheUpdater:
         )
         write_store(staging_db, tables, provenance)
 
+    def _client(self) -> AbstractContextManager[httpx.Client]:
+        if self._http_client is not None:
+            return nullcontext(self._http_client)
+        return httpx.Client(follow_redirects=True)
+
+    def has_update(self) -> bool:
+        """Whether upstream offers a different cache than the active snapshot (one small request).
+
+        True when there is no snapshot, or it came from another source or pinned ID. Otherwise
+        compares the selected upstream cache's ID and timestamp with the snapshot's.
+        """
+        snapshot = self._read_snapshot()
+        if snapshot is None:
+            return True
+        manifest = snapshot[1]
+        if manifest["source"] != self.source_url or manifest.get("requested_cache_id") != self.cache_id:
+            return True
+        try:
+            with self._client() as client:
+                upstream = self._select_cache(client)
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, OverflowError) as error:
+            raise CacheUpdateError(f"Unable to check for OSRS data updates: {error}") from error
+        local = manifest["cache"]
+        return (upstream.get("id"), upstream.get("timestamp")) != (local.get("id"), local.get("timestamp"))
+
+    def sync(self) -> bool:
+        """Download a new snapshot if ``has_update``; returns whether one was published."""
+        if not self.has_update():
+            return False
+        self.update(force=True)
+        return True
+
     def update(self, *, force: bool = False, max_age: float = 86400) -> Path:
         """Download, validate, and atomically publish a ``cache.db`` snapshot."""
         max_age = validate_duration(max_age, "max_age")
@@ -282,12 +314,7 @@ class CacheUpdater:
             if self.db_path.is_symlink():
                 raise ValueError("Cache database must not be a symlink")
 
-            context = (
-                nullcontext(self._http_client)
-                if self._http_client is not None
-                else httpx.Client(follow_redirects=True)
-            )
-            with context as client:
+            with self._client() as client:
                 self._download_store(client, staging_db)
 
             os.replace(staging_db, self.db_path)

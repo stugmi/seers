@@ -148,3 +148,49 @@ def test_server_exits_with_its_client_even_when_the_pipe_stays_open(tmp_path):
     finally:
         _kill(server_pid)
         _kill(leaker_pid)
+
+
+@pytest.mark.anyio
+async def test_one_http_server_serves_concurrent_clients_and_refuses_a_duplicate(tmp_path):
+    import socket
+
+    from mcp.client.streamable_http import streamable_http_client
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    command = [sys.executable, "-m", "seers.mcp", "--cache-dir", str(tmp_path), "--port", str(port)]
+    server = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            with socket.socket() as sock:
+                if sock.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.1)
+        else:
+            pytest.fail("the HTTP server never listened")
+
+        async def lookup() -> dict:
+            async with Client(streamable_http_client(f"http://127.0.0.1:{port}/mcp")) as client:
+                result = await client.call_tool("cache_get", {"kind": "items", "id": "12924"})
+                return result.structured_content
+
+        import anyio
+
+        results: list[dict] = []
+
+        async def collect() -> None:
+            results.append(await lookup())
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(collect)
+            tg.start_soon(collect)
+        assert results == [{"id": "12924", "name": "toxic_blowpipe", "line": 12925}] * 2
+
+        duplicate = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        assert duplicate.returncode != 0
+        assert server.poll() is None
+    finally:
+        server.kill()
+        server.wait()
