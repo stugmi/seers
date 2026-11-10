@@ -1,9 +1,9 @@
-"""The MCP extension: tools through the SDK's in-memory client, lifetime over real stdio."""
+"""The MCP extension: tools through the SDK's in-memory client, sharing and lifetime over real processes."""
 
-import os
+import json
+import socket
 import subprocess
 import sys
-import textwrap
 import time
 
 import pytest
@@ -80,74 +80,140 @@ async def test_bad_arguments_are_rejected_before_the_tool_runs(mcp, arguments):
 
 # Lifetime
 
-_ORPHANING_CLIENT = textwrap.dedent(
-    """
-    import json, os, subprocess, sys
-
-    # A client whose stdin pipe for the server leaks into a long-lived process:
-    # after the client dies the pipe stays open, so the server never sees EOF.
-    read, write = os.pipe()
-    os.set_inheritable(write, True)
-    server = subprocess.Popen([sys.executable, "-m", "seers.mcp", "--no-sync"], stdin=read, stdout=subprocess.PIPE)
-    leaker = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
-        close_fds=False, **({} if os.name == "nt" else {"pass_fds": (write,)}),
-    )
-    hello = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-        "protocolVersion": "2025-11-25", "capabilities": {},
-        "clientInfo": {"name": "orphaning-client", "version": "0"}}}
-    os.write(write, (json.dumps(hello) + "\\n").encode())
-    server.stdout.readline()  # the server is up and serving
-    with open(sys.argv[1], "w") as pids:
-        pids.write(f"{server.pid} {leaker.pid}")
-    os._exit(0)
-    """
-)
+def _listening(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(0.25)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _running(pid: int) -> bool:
-    if sys.platform == "win32":
-        import ctypes
+@pytest.fixture
+def port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
 
-        kernel32 = ctypes.WinDLL("kernel32")
-        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
-        if not handle:
-            return False
-        try:
-            return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT
-        finally:
-            kernel32.CloseHandle(handle)
+
+@pytest.fixture
+def shared(tmp_path, port) -> list[str]:
+    """Options for a shared server of this test's own: offline, on a free port, gone 1s after its last client."""
+    return ["--no-sync", "--cache-dir", str(tmp_path), "--shared-port", str(port), "--idle-timeout", "1"]
+
+
+class StdioSession:
+    """What an MCP client does with ``seers-mcp``: launch it and talk JSON-RPC over its pipes."""
+
+    def __init__(self, options: list[str]) -> None:
+        self.process = subprocess.Popen(
+            [sys.executable, "-m", "seers.mcp", *options],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self._id = 0
+
+    def _send(self, message: dict) -> None:
+        self.process.stdin.write((json.dumps({"jsonrpc": "2.0", **message}) + "\n").encode())
+        self.process.stdin.flush()
+
+    def _request(self, method: str, params: dict) -> dict:
+        self._id += 1
+        self._send({"id": self._id, "method": method, "params": params})
+        while line := self.process.stdout.readline():
+            reply = json.loads(line)
+            if reply.get("id") == self._id:
+                return reply["result"]
+        pytest.fail(f"seers-mcp exited: {self.process.stderr.read().decode()}")
+
+    def start(self) -> "StdioSession":
+        self._request("initialize", {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"},
+        })
+        self._send({"method": "notifications/initialized"})
+        return self
+
+    def lookup(self) -> dict:
+        arguments = {"kind": "items", "id": "12924"}
+        return self._request("tools/call", {"name": "cache_get", "arguments": arguments})["structuredContent"]
+
+    def close(self) -> int:
+        """Close stdin, as a client does when its session ends; returns the exit code."""
+        self.process.stdin.close()
+        return self.process.wait(timeout=10)
+
+    def kill(self) -> None:
+        self.process.kill()
+        self.process.wait()
+
+
+def test_stdio_clients_share_a_server_that_outlives_its_starter_and_exits_once_unused(shared, port):
+    blowpipe = {"id": "12924", "name": "toxic_blowpipe", "line": 12925}
+    assert not _listening(port)
+    first = StdioSession(shared).start()  # nothing was running: this session starts the server
+    second = StdioSession(shared)
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+        assert second.start().lookup() == first.lookup() == blowpipe
+        assert first.close() == 0
+        assert second.lookup() == blowpipe
+        assert second.close() == 0
 
-
-def _kill(pid: int) -> None:
-    if _running(pid):
-        if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
-        else:
-            os.kill(pid, 9)
-
-
-def test_server_exits_with_its_client_even_when_the_pipe_stays_open(tmp_path):
-    pid_file = tmp_path / "pids"
-    subprocess.run(
-        [sys.executable, "-c", _ORPHANING_CLIENT, str(pid_file)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=60, check=True,
-    )
-    server_pid, leaker_pid = map(int, pid_file.read_text().split())
-    try:
-        deadline = time.monotonic() + 5
-        while _running(server_pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _running(leaker_pid), "the leaked pipe must still be open for this to test anything"
-        assert not _running(server_pid)
+        deadline = time.monotonic() + 10
+        while _listening(port) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _listening(port)
     finally:
-        _kill(server_pid)
-        _kill(leaker_pid)
+        first.kill()
+        second.kill()
+
+
+def test_a_client_asking_for_another_cache_is_refused_instead_of_served_the_running_one(shared, tmp_path):
+    running = StdioSession(shared).start()
+    try:
+        other = [*shared[:2], str(tmp_path / "other"), *shared[3:]]
+        refused = subprocess.run(
+            [sys.executable, "-m", "seers.mcp", *other],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )
+        assert refused.returncode != 0
+        assert str(tmp_path) in refused.stderr.decode()  # names what the running server uses
+        assert running.lookup()["name"] == "toxic_blowpipe"
+    finally:
+        running.kill()
+
+
+def test_a_server_left_running_from_another_version_is_refused_by_name(shared, port):
+    import threading
+
+    def old_server(listener: socket.socket) -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.recv(4096)
+            connection.sendall(json.dumps({"seers-mcp": [], "version": "0.0.1"}).encode() + b"\n")
+
+    with socket.create_server(("127.0.0.1", port)) as listener:
+        threading.Thread(target=old_server, args=(listener,), daemon=True).start()
+        refused = subprocess.run(
+            [sys.executable, "-m", "seers.mcp", *shared],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60,
+        )
+    assert refused.returncode != 0
+    assert "is still seers 0.0.1" in refused.stderr.decode()
+
+
+def test_install_corrects_a_stale_entry_and_keeps_everything_else(tmp_path):
+    from seers.mcp.install import entry, install
+
+    config = tmp_path / "mcp.json"
+    stale = {"type": "http", "url": "http://127.0.0.1:8765/mcp", "env": {"KEEP": "1"}}
+    config.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}, "seers": stale}, "theme": "dark"}))
+    commented = tmp_path / "commented.json"
+    commented.write_text('{ // mine\n "mcpServers": {"seers": {}} }')
+
+    install([config, commented])
+
+    assert json.loads(config.read_text()) == {
+        "mcpServers": {"other": {"command": "x"}, "seers": {**entry(), "env": {"KEEP": "1"}}},
+        "theme": "dark",
+    }
+    assert commented.read_text() == '{ // mine\n "mcpServers": {"seers": {}} }'
 
 
 @pytest.mark.anyio

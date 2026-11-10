@@ -221,11 +221,13 @@ Both also run as modules: `python -m seers.cli.wiki`, `python -m seers.cli.updat
 
 ## MCP server
 
-An optional extension in `seers.mcp`, installed with the `mcp` extra (MCP Python SDK 2.x). `import seers` never loads it. It runs over stdio, one server per client:
+An optional extension in `seers.mcp`, installed with the `mcp` extra (MCP Python SDK 2.x). `import seers` never loads it. Clients launch it over stdio:
 
 ```sh
 seers-mcp          # or: python -m seers.mcp
 ```
+
+All clients on the machine share one server. The process a client launches is a small relay to it on a loopback port (28765). The first relay starts the server if none is running, and the server exits by itself once it has had no client for `--idle-timeout` seconds (default 60). Nothing has to be started beforehand or left running.
 
 | Tool | Returns |
 | :--- | :--- |
@@ -236,42 +238,41 @@ seers-mcp          # or: python -m seers.mcp
 
 All tools are read-only and return structured results with an output schema, except `wiki_page`, which returns Markdown text. Lookups that fail (unknown player, missing ID) come back as tool errors with a readable message.
 
-The server exits when its stdin closes, and also when the client process that started it exits, even if another process still holds the pipe open.
+A relay exits when its client closes stdin or exits.
 
-On startup the server checks OpenRS2 in the background and downloads a new snapshot if upstream's cache differs from the local one; tools answer from the current snapshot meanwhile, and an unreachable upstream only logs a warning. `--no-sync` (or `SeersMCP(sync_on_start=False)`) turns it off. The check is skipped with `--cache-path` or a client you pass in.
+When the shared server starts it checks OpenRS2 in the background and downloads a new snapshot if upstream's cache differs from the local one; tools answer from the current snapshot meanwhile, and an unreachable upstream only logs a warning. `--no-sync` (or `SeersMCP(sync_on_start=False)`) turns it off. The check is skipped with `--cache-path` or a client you pass in.
 
-Options: `--cache-path` (your own `cache.db` or directory), `--cache-dir`, `--auto-update`, `--max-age`, `--no-sync`, `--port`/`--host`.
+Options: `--cache-path` (your own `cache.db` or directory), `--cache-dir`, `--auto-update`, `--max-age`, `--no-sync`, `--shared-port`, `--idle-timeout`. Clients sharing a server must pass the same options; a client that asks for a different cache is refused with a message naming what runs, and can use another `--shared-port` to get a separate server. The server logs to `seers-mcp-<port>.log` in the temp directory.
 
-Every stdio client starts its own server. To share one process between all clients (several agent sessions), serve streamable HTTP and point each client at the URL; the server binds loopback only unless `--host` says otherwise, and a second launch on the same port exits:
+To serve streamable HTTP instead, for clients that connect by URL, run a server yourself; it binds loopback only unless `--host` says otherwise:
 
 ```sh
 seers-mcp --port 8765    # clients: {"type": "http", "url": "http://127.0.0.1:8765/mcp"}
 ```
 
-Client configuration:
+Client configuration is written for you. The entry is the `seers-mcp` command, so it follows whichever installation is on `PATH`; if `PATH` does not lead to the installation you run this from, the entry names its Python by full path instead:
+
+```sh
+seers-mcp --install                  # correct every known client config that already has a seers entry
+seers-mcp --install path/to/mcp.json # add or correct the entry in that file
+python -m seers.mcp --upgrade        # install the newest seers, then do the same check
+```
+
+`--upgrade` reinstalls from where seers was installed from (the repository's main branch if that is unknown, or `--upgrade SOURCE` for anything pip accepts; a `pip install -e` checkout gets `git pull` instead), then corrects the configs with the new version. On Windows a running `seers-mcp.exe` cannot be replaced: close the agent sessions that use seers first, and run the upgrade as `python -m seers.mcp`, with the Python seers is installed in.
+
+With no file it checks the user-level configs of omp, Claude Code, Claude Desktop, Cursor, VS Code, Windsurf and Gemini CLI, changes only those that already list `seers`, and prints the entry to paste elsewhere:
 
 ```json
 {
   "mcpServers": {
     "seers": {
-      "command": "/absolute/path/to/venv/bin/seers-mcp"
+      "command": "seers-mcp"
     }
   }
 }
 ```
 
-On Windows the script is `Scripts\seers-mcp.exe` inside the venv. With `uv`:
-
-```json
-{
-  "mcpServers": {
-    "seers": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/seers", "--extra", "mcp", "seers-mcp"]
-    }
-  }
-}
-```
+Only plain JSON is edited: a file with comments is reported and left alone, and other settings on the entry (`env`, `disabled`) are kept.
 
 From Python, `seers.mcp.SeersMCP` is an `MCPServer`: `SeersMCP().run()`, or `SeersMCP(client)` to share an `AsyncClient` you manage.
 

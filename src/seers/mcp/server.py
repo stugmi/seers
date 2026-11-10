@@ -1,6 +1,5 @@
 """``SeersMCP``: the library's read-only lookups as MCP tools with structured results."""
 
-import argparse
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -24,7 +23,6 @@ from seers.display import Results
 from seers.errors import OSRSError
 from seers.ge import Item, Price, PriceHistory, Timestep
 from seers.hiscores import Activity, Mode, Skill, Stats
-from seers.mcp.watchdog import watch_client
 from seers.wiki import SearchHit
 
 INSTRUCTIONS = """\
@@ -247,6 +245,31 @@ async def _sync_cache(updater: CacheUpdater) -> None:
         logger.warning("OSRS name cache sync failed: %s", error)
 
 
+@asynccontextmanager
+async def open_client(
+    *,
+    cache_path: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    auto_update: bool = False,
+    max_age: float = 86400,
+    sync_on_start: bool = True,
+) -> AsyncIterator[AsyncClient]:
+    """An ``AsyncClient`` for a server to own, with the startup cache sync running behind it."""
+    async with AsyncClient(
+        cache_path=cache_path,
+        cache_dir=cache_dir,
+        auto_update=auto_update,
+        max_age=max_age,
+    ) as client:
+        async with anyio.create_task_group() as tasks:
+            if sync_on_start and client.data.updater is not None:
+                tasks.start_soon(_sync_cache, client.data.updater)
+            try:
+                yield client
+            finally:
+                tasks.cancel_scope.cancel()  # a download still running must not delay shutdown
+
+
 class SeersMCP(MCPServer[AsyncClient]):
     """The seers tools on an ``MCPServer``.
 
@@ -277,19 +300,14 @@ class SeersMCP(MCPServer[AsyncClient]):
             if client is not None:
                 yield client
                 return
-            async with AsyncClient(
+            async with open_client(
                 cache_path=cache_path,
                 cache_dir=cache_dir,
                 auto_update=auto_update,
                 max_age=max_age,
+                sync_on_start=sync_on_start,
             ) as owned:
-                async with anyio.create_task_group() as tasks:
-                    if sync_on_start and owned.data.updater is not None:
-                        tasks.start_soon(_sync_cache, owned.data.updater)
-                    try:
-                        yield owned
-                    finally:
-                        tasks.cancel_scope.cancel()  # a download still running must not delay shutdown
+                yield owned
 
         super().__init__(
             "seers",
@@ -307,29 +325,3 @@ class SeersMCP(MCPServer[AsyncClient]):
                 structured_output=structured,
             )
 
-
-def main(argv: list[str] | None = None) -> None:
-    """``seers-mcp`` / ``python -m seers.mcp``: serve the tools over stdio, or over HTTP with ``--port``."""
-    parser = argparse.ArgumentParser(prog="seers-mcp", description="seers MCP server")
-    parser.add_argument("--cache-path", type=Path, help="Use your own cache.db or directory")
-    parser.add_argument("--cache-dir", type=Path, help="Where downloaded snapshots are stored")
-    parser.add_argument("--auto-update", action="store_true", help="Refresh the cache when it is read")
-    parser.add_argument("--max-age", type=float, default=86400, help="Refresh interval in seconds")
-    parser.add_argument("--no-sync", action="store_true", help="Do not check OpenRS2 for a changed cache at startup")
-    parser.add_argument("--port", type=int, help="Serve streamable HTTP on this port instead of stdio, so every client shares one process")
-    parser.add_argument("--host", default="127.0.0.1", help="Interface for --port (default: loopback only)")
-    args = parser.parse_args(argv)
-    if args.cache_path is not None and (args.auto_update or args.cache_dir is not None):
-        parser.error("--cache-path cannot be combined with --auto-update or --cache-dir")
-    server = SeersMCP(
-        cache_path=args.cache_path,
-        cache_dir=args.cache_dir,
-        auto_update=args.auto_update,
-        max_age=args.max_age,
-        sync_on_start=not args.no_sync,
-    )
-    if args.port is None:
-        watch_client()
-        server.run()
-    else:
-        server.run("streamable-http", host=args.host, port=args.port)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "seers"
-version = "0.9.1"
+version = "1.0.0"
 description = "Old School RuneScape Wiki, Grand Exchange, hiscores and game cache names for Python, with an optional MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -50,7 +50,7 @@ dev = ["pytest>=8", "trio>=0.27"]
 [project.scripts]
 seers-wiki = "seers.cli.wiki:main"
 seers-update = "seers.cli.update:main"
-seers-mcp = "seers.mcp.server:main"
+seers-mcp = "seers.mcp.cli:main"
 
 [tool.hatch.build.targets.sdist]
 only-include = ["src/seers", "tests", "examples"]

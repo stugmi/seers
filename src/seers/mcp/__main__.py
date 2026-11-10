@@ -1,5 +1,5 @@
-"""``python -m seers.mcp``: serve the seers tools over stdio."""
+"""``python -m seers.mcp``: the same as ``seers-mcp``."""
 
-from seers.mcp.server import main
+from seers.mcp.cli import main
 
 main()
